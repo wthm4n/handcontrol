@@ -691,7 +691,7 @@ def main():
             print("Reset.")
 
         elif key == ord('t'):
-            # If teaching active, T stops it; otherwise prompt for AI scene
+            # if the teach.method() is active, stop it. Otherwise, if we're not already generating, start the prompt thread.
             if teach.active:
                 teach.stop()
                 print("Teaching mode stopped.")
