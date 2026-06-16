@@ -19,7 +19,7 @@ Keys:
   G = toggle gravity
   R = reset scene (blank workspace)
   S = toggle snap on grabbed node
-  T = AI scene generation (type topic in terminal) / stop teaching
+  T = AI workspace generation (type topic in terminal) / stop teaching
   N = next teaching step (auto-starts teaching mode)
   P = previous teaching step
   C = cluster nodes by category
@@ -43,7 +43,7 @@ from hand import HandTracker
 from physics import HandVelocityTracker, HandDepthCalibrator
 from node import SpatialNode
 from graph import KnowledgeGraph, ConnectionRenderer
-from scene_generator import SceneGenerator
+from workspace_generator import WorkspaceGenerator
 from effects import (
     AnimatedCursor, DepthPresenceHUD,
     SpawnSystem, DeleteSystem, SelectionSystem,
@@ -424,10 +424,10 @@ def main():
 
     spawn_sys = SpawnSystem(factory=node_factory)
 
-    # ── AI scene generator (local Ollama) ───────────────────────────────
+    # ── AI workspace generator (local Ollama) ─────────────────────────
     ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
     ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M")
-    generator  = SceneGenerator(host=ollama_host, model=ollama_model)
+    generator  = WorkspaceGenerator(host=ollama_host, model=ollama_model)
     generating = False
     gen_status = ""
     gen_status_t = 0.0
@@ -441,10 +441,10 @@ def main():
         gen_status_t = time.time()
         if error:
             gen_status = f"Error: {error}"
-            print(f"\n[SceneGenerator] {error}")
+            print(f"\n[WorkspaceGenerator] {error}")
         else:
             gen_status = f"Added {len(new_nodes)} nodes"
-            print(f"\n[SceneGenerator] Added {len(new_nodes)} nodes")
+            print(f"\n[WorkspaceGenerator] Added {len(new_nodes)} nodes")
 
     # ── Teaching mode ─────────────────────────────────────────────────
     teach = TeachingScene(graph)
@@ -463,7 +463,7 @@ def main():
     print("  FIST         = grab & throw node")
     print("  OPEN PALM    = spawn blank node (hold 2s)")
     print("  PINCH        = select / deselect")
-    print("  T            = AI scene generation (type topic in terminal)")
+    print("  T            = AI workspace generation (type topic in terminal)")
     print("                 or stop teaching mode if active")
     print("  N / P        = teaching mode next / prev step")
     print("  C            = cluster nodes by category")
@@ -574,7 +574,7 @@ def main():
             if topic:
                 generating = True
                 gen_status = ""
-                print(f"[SceneGenerator] Generating scene for: '{topic}'")
+                print(f"[WorkspaceGenerator] Generating scene for: '{topic}'")
                 generator.generate_async(
                     prompt   = topic,
                     graph    = graph,
@@ -583,7 +583,7 @@ def main():
                     screen_h = H,
                 )
             else:
-                print("[SceneGenerator] Cancelled.")
+                print("[WorkspaceGenerator] Cancelled.")
 
         # ── Clear stale status message ─────────────────────────────────
         if gen_status and (now - gen_status_t) > 3.0:
@@ -700,7 +700,7 @@ def main():
                 print("Already generating…")
             else:
                 waiting_prompt = True
-                prompt_thread.start("─" * 40 + "\nAI Scene Generator\n" + "─" * 40)
+                prompt_thread.start("─" * 40 + "\nAI Workspace Generator\n" + "─" * 40)
 
         elif key == ord('n'):
             if not teach.active:
