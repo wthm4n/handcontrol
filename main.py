@@ -417,7 +417,7 @@ def main():
         cat = _spawn_cats[_sidx[0] % len(_spawn_cats)]
         _sidx[0] += 1
         n = SpatialNode(title="New Node", body="Tap and explore this idea.",
-                        category=cat, size=size)
+                        category=cat)
         n.x3d = cx;  n.y3d = cy;  n.z3d = depth_z
         graph.add_node(n)
         return n
