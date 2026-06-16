@@ -153,7 +153,7 @@ class DepthPresenceHUD:
 
 # ── Spawn System ──────────────────────────────────────────────────────
 
-SPAWN_HOLD_TIME  = 0.5     # seconds open palm held
+SPAWN_HOLD_TIME  = 2    # seconds open palm held
 SPAWN_COOLDOWN   = 0.8     # seconds between spawns
 
 class SpawnSystem:
