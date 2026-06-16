@@ -31,7 +31,7 @@ Usage
 Requires Ollama (https://ollama.com) running and reachable at `host`
 (default http://localhost:11434), with the chosen model pulled, e.g.:
 
-    ollama pull llama3.1
+    ollama pull qwen2.5-coder:7b-instruct-q4_K_M
 
 Async / threaded use
 --------------------
@@ -366,7 +366,7 @@ class WorkspaceGenerator:
         then "http://localhost:11434".
     model : str, optional
         Model name (must already be pulled). Falls back to OLLAMA_MODEL
-        env var, then "llama3.1".
+        env var, then "qwen2.5-coder:7b-instruct-q4_K_M".
     """
 
     def __init__(self, host=None, model=None):
