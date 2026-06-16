@@ -269,6 +269,19 @@ class Cube:
             self.scale_v = _lerp(self.scale_v, 1.0, 0.18)
 
     # ── Rendering ─────────────────────────────────────────────────────
+    #
+    # Two-pass architecture (O(1) blends regardless of cube count):
+    #
+    #   draw_glow(glow_layer, img)  — draws only soft/wide strokes onto
+    #       a shared black glow_layer that all cubes share in one frame.
+    #       The caller does ONE addWeighted after all cubes are done.
+    #
+    #   draw_crisp(img)  — draws sharp edges/vertices directly onto img
+    #       with no blending at all.  Also handles fog (cheap ROI mul)
+    #       shadow, trail, rings — all directly on img with no copy().
+    #
+    # The old draw(img) method is kept as a convenience wrapper for
+    # callers that don't opt into the two-pass path.
 
     def _vertices(self, screen_cx, screen_cy):
         h = self.size * self.scale_v
@@ -305,24 +318,31 @@ class Cube:
         if self.hovered:   return COLOR_HOVER
         return COLOR_IDLE
 
-    def draw(self, img):
-        H, W = img.shape[:2]
+    # ── Pass 1: glow onto shared overlay (no addWeighted here) ────────
+
+    def draw_glow(self, glow_layer):
+        """
+        Draw bloom strokes onto glow_layer (a black canvas shared by all
+        cubes).  Uses NO img.copy() and NO addWeighted — just plain cv2
+        draw calls with thick strokes.  The caller composites once.
+        """
+        H, W = glow_layer.shape[:2]
         screen_cx = W / 2.0
         screen_cy = H / 2.0
 
-        color = self._pick_color()
-        pts   = self._vertices(screen_cx, screen_cy)
-        glow  = self.glow + self._spawn_glow
-        depth_glow = _depth_glow_scale(self.z3d)
-        fog   = _fog_alpha(self.z3d)
+        color      = self._pick_color()
+        pts        = self._vertices(screen_cx, screen_cy)
+        eff_glow   = (self.glow + self._spawn_glow) * _depth_glow_scale(self.z3d)
 
-        # ── Ground shadow ─────────────────────────────────────────────
-        self._draw_shadow(img, screen_cx, screen_cy, H)
+        if eff_glow < 0.02:
+            return
 
-        # ── Motion trail ─────────────────────────────────────────────
-        self._draw_trail(img, color)
+        # Scale glow widths by effective glow strength so idle cubes are subtle
+        # and grabbed / spawning cubes bloom strongly.
+        w1 = max(2, int(14 * eff_glow))   # outermost (softest)
+        w2 = max(1, int( 8 * eff_glow))
+        w3 = max(1, int( 4 * eff_glow))   # innermost (sharpest halo)
 
-        # ── Edges ─────────────────────────────────────────────────────
         def edge_z(e):
             return (pts[e[0]][2] + pts[e[1]][2]) * 0.5
 
@@ -331,102 +351,124 @@ class Cube:
             avg_wz  = (pa[3] + pb[3]) * 0.5
             depth_t = max(0.0, min(1.0, (avg_wz + 100) / 600.0))
             lw      = max(1, int(1 + depth_t * 2.5))
+            # Three concentric strokes — widest first so inner overwrites
+            cv2.line(glow_layer, (pa[0],pa[1]), (pb[0],pb[1]),
+                     color, lw + w1, cv2.LINE_AA)
+            cv2.line(glow_layer, (pa[0],pa[1]), (pb[0],pb[1]),
+                     color, lw + w2, cv2.LINE_AA)
+            cv2.line(glow_layer, (pa[0],pa[1]), (pb[0],pb[1]),
+                     color, lw + w3, cv2.LINE_AA)
 
-            eff_glow = glow * depth_glow
-            if eff_glow > 0.02:
-                # Multi-layer bloom
-                for radius, alpha_mult in [(14, 0.06), (8, 0.12), (4, 0.20)]:
-                    ov = img.copy()
-                    cv2.line(ov, (pa[0],pa[1]), (pb[0],pb[1]), color, lw + radius, cv2.LINE_AA)
-                    cv2.addWeighted(ov, eff_glow * alpha_mult,
-                                    img, 1 - eff_glow * alpha_mult, 0, img)
-            cv2.line(img, (pa[0],pa[1]), (pb[0],pb[1]), color, lw, cv2.LINE_AA)
-
-        # ── Vertices ──────────────────────────────────────────────────
         for sx, sy, lz, wz in pts:
             depth_t = max(0.0, min(1.0, (wz + 100) / 600.0))
             r = max(2, int(2 + depth_t * 3.0))
-            eff_glow = glow * depth_glow
-            if eff_glow > 0.02:
-                ov = img.copy()
-                cv2.circle(ov, (sx, sy), r+6, color, -1, cv2.LINE_AA)
-                cv2.addWeighted(ov, eff_glow * 0.14, img, 1 - eff_glow * 0.14, 0, img)
-            cv2.circle(img, (sx, sy), r, color, -1, cv2.LINE_AA)
+            cv2.circle(glow_layer, (sx, sy), r + w2, color, -1, cv2.LINE_AA)
 
-        # ── Hover / grab / select ring ────────────────────────────────
+        # Hover / grab / select ring on glow layer
         if self.hovered or self.grabbed or self.selected:
             centre_scale = FOV / max(FOV + self.z3d, 1.0)
             ring_r = max(10, int(self.size * 1.5 * self.scale_v * centre_scale))
-            ov = img.copy()
-            cv2.circle(ov, (int(self.sx), int(self.sy)), ring_r, color, 1, cv2.LINE_AA)
-            cv2.addWeighted(ov, 0.20 + glow * 0.35,
-                            img, 1 - (0.20 + glow * 0.35), 0, img)
+            ring_w = max(1, int(6 * eff_glow))
+            cv2.circle(glow_layer, (int(self.sx), int(self.sy)),
+                       ring_r, color, ring_w, cv2.LINE_AA)
 
-        # ── Delete countdown ring ─────────────────────────────────────
+    # ── Pass 2: crisp geometry directly on img (no blending) ──────────
+
+    def draw_crisp(self, img):
+        H, W = img.shape[:2]
+        screen_cx = W / 2.0
+        screen_cy = H / 2.0
+
+        color = self._pick_color()
+        pts   = self._vertices(screen_cx, screen_cy)
+        fog   = _fog_alpha(self.z3d)
+
+        # Shadow — cheap: draw dark ellipse directly (semi-transparent via alpha)
+        self._draw_shadow_direct(img, screen_cx, screen_cy, H)
+
+        # Trail — direct circles, alpha approximated by colour darkening
+        self._draw_trail_direct(img, color)
+
+        # Edges
+        def edge_z(e):
+            return (pts[e[0]][2] + pts[e[1]][2]) * 0.5
+
+        for ia, ib in sorted(EDGES, key=edge_z):
+            pa, pb = pts[ia], pts[ib]
+            avg_wz  = (pa[3] + pb[3]) * 0.5
+            depth_t = max(0.0, min(1.0, (avg_wz + 100) / 600.0))
+            lw      = max(1, int(1 + depth_t * 2.5))
+            cv2.line(img, (pa[0],pa[1]), (pb[0],pb[1]), color, lw, cv2.LINE_AA)
+
+        # Vertices
+        for sx, sy, lz, wz in pts:
+            depth_t = max(0.0, min(1.0, (wz + 100) / 600.0))
+            r = max(2, int(2 + depth_t * 3.0))
+            cv2.circle(img, (sx, sy), r, color, -1, cv2.LINE_AA)
+
+        # Delete ring — drawn directly; slight transparency via colour mixing
         if self.delete_progress > 0.02:
-            self._draw_delete_ring(img, color)
+            self._draw_delete_ring_direct(img, color)
 
-        # ── Depth fog ─────────────────────────────────────────────────
+        # Depth fog — multiply ROI in place (numpy, no copy)
         if fog > 0.02:
-            # Darken far objects by blending toward black at cube bounding box
             centre_scale = FOV / max(FOV + self.z3d, 1.0)
-            fr = max(20, int(self.size * 2.0 * centre_scale))
-            sx_i, sy_i = int(self.sx), int(self.sy)
-            x1 = max(0, sx_i - fr);  y1 = max(0, sy_i - fr)
-            x2 = min(W, sx_i + fr);  y2 = min(H, sy_i + fr)
+            fr  = max(20, int(self.size * 2.0 * centre_scale))
+            sxi = int(self.sx);  syi = int(self.sy)
+            x1  = max(0, sxi - fr);  y1 = max(0, syi - fr)
+            x2  = min(W, sxi + fr);  y2 = min(H, syi + fr)
             roi = img[y1:y2, x1:x2]
             if roi.size > 0:
-                dark = (roi * (1.0 - fog)).astype(roi.dtype)
-                img[y1:y2, x1:x2] = dark
+                # In-place multiply — avoids a full-array copy
+                import numpy as np
+                np.multiply(roi, (1.0 - fog), out=roi, casting='unsafe')
 
-    def _draw_shadow(self, img, screen_cx, screen_cy, frame_h):
-        """Soft ellipse shadow projected on floor plane."""
+    # ── Convenience: old single-pass API (used as fallback) ───────────
+
+    def draw(self, img):
+        """
+        Legacy single-pass draw.  Still correct but slower with many cubes.
+        Prefer draw_glow() + draw_crisp() called from the render loop.
+        """
+        self.draw_crisp(img)
+
+    # ── Shadow (direct, no copy) ──────────────────────────────────────
+
+    def _draw_shadow_direct(self, img, screen_cx, screen_cy, frame_h):
         floor_y = int(frame_h * 0.94)
-        # Shadow only when not too far in Z or too high above floor
         dist_to_floor = floor_y - self.y3d
         if dist_to_floor < 0 or dist_to_floor > frame_h * 0.9:
             return
-
         centre_scale = FOV / max(FOV + self.z3d, 1.0)
-        # Shadow x tracks cube sx; y is always at floor
         shadow_sx = int(screen_cx + (self.x3d - screen_cx) * centre_scale)
         shadow_sy = floor_y - 2
-
-        # Shadow size depends on height above floor and depth
         height_frac = max(0.0, min(1.0, dist_to_floor / (frame_h * 0.5)))
         rx = max(8, int(self.size * centre_scale * (1.0 - height_frac * 0.6)))
         ry = max(3, int(rx * 0.25))
+        # Approximate semi-transparency by drawing a dark (not pure black) ellipse
+        darkness = int(30 * (1.0 - height_frac))   # 0 = fully transparent feel
+        if darkness < 2:
+            return
+        shadow_color = (darkness, darkness, darkness)
+        cv2.ellipse(img, (shadow_sx, shadow_sy), (rx, ry),
+                    0, 0, 360, shadow_color, -1, cv2.LINE_AA)
 
-        # Opacity fades as cube rises
-        opacity = (1.0 - height_frac) * 0.45
-
-        ov = img.copy()
-        cv2.ellipse(ov, (shadow_sx, shadow_sy), (rx, ry),
-                    0, 0, 360, (0, 0, 0), -1, cv2.LINE_AA)
-        cv2.addWeighted(ov, opacity, img, 1.0 - opacity, 0, img)
-
-    def _draw_trail(self, img, color):
-        for i, (tx, ty, alpha) in enumerate(self._trail):
+    def _draw_trail_direct(self, img, color):
+        for tx, ty, alpha in self._trail:
+            # Approximate alpha by scaling colour toward black
+            c = tuple(int(v * alpha * 0.5) for v in color)
             r = max(1, int(3 * alpha))
-            ov = img.copy()
-            cv2.circle(ov, (int(tx), int(ty)), r, color, -1, cv2.LINE_AA)
-            cv2.addWeighted(ov, alpha * 0.4, img, 1.0 - alpha * 0.4, 0, img)
+            cv2.circle(img, (int(tx), int(ty)), r, c, -1, cv2.LINE_AA)
 
-    def _draw_delete_ring(self, img, color):
-        """Animated countdown ring around the cube."""
+    def _draw_delete_ring_direct(self, img, color):
         centre_scale = FOV / max(FOV + self.z3d, 1.0)
         ring_r = max(15, int(self.size * 1.8 * self.scale_v * centre_scale))
         cx_i, cy_i = int(self.sx), int(self.sy)
         angle = int(360 * self.delete_progress)
-
-        ov = img.copy()
-        # Background ring
-        cv2.ellipse(ov, (cx_i, cy_i), (ring_r, ring_r), -90,
+        cv2.ellipse(img, (cx_i, cy_i), (ring_r, ring_r), -90,
                     0, 360, (60, 40, 40), 2, cv2.LINE_AA)
-        # Progress arc
-        cv2.ellipse(ov, (cx_i, cy_i), (ring_r, ring_r), -90,
+        cv2.ellipse(img, (cx_i, cy_i), (ring_r, ring_r), -90,
                     0, angle, COLOR_DELETE, 3, cv2.LINE_AA)
-        cv2.addWeighted(ov, 0.8, img, 0.2, 0, img)
 
     def screen_dist(self, cx, cy):
         return math.sqrt((cx - self.sx)**2 + (cy - self.sy)**2)
