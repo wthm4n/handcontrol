@@ -54,7 +54,7 @@ from node import SpatialNode
 # ── Default Ollama connection ───────────────────────────────────────
 OLLAMA_HOST     = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M")
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 120
 
 # ── Vocabulary ───────────────────────────────────────────────────────
 STRUCTURE_TYPES = {
