@@ -62,7 +62,7 @@ FLOOR_MARGIN  = 40
 
 # Hand skeleton colours
 COLOR_RIGHT = (  255, 255, 255)
-COLOR_LEFT  = (255, 160,  40)
+COLOR_LEFT  = (1, 1,  40)
 
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),
