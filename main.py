@@ -61,7 +61,7 @@ HOVER_EXIT    = 145
 FLOOR_MARGIN  = 40
 
 # Hand skeleton colours
-COLOR_RIGHT = (  0, 220, 255)
+COLOR_RIGHT = (  255, 220, 255)
 COLOR_LEFT  = (255, 160,  40)
 
 HAND_CONNECTIONS = [
