@@ -424,9 +424,10 @@ def main():
 
     spawn_sys = SpawnSystem(factory=node_factory)
 
-    # ── AI scene generator ────────────────────────────────────────────
-    api_key    = os.environ.get("ANTHROPIC_API_KEY", "")
-    generator  = SceneGenerator(api_key=api_key)
+    # ── AI scene generator (local Ollama) ───────────────────────────────
+    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "llama3.1")
+    generator  = SceneGenerator(host=ollama_host, model=ollama_model)
     generating = False
     gen_status = ""
     gen_status_t = 0.0
@@ -468,8 +469,8 @@ def main():
     print("  C            = cluster nodes by category")
     print("  L            = auto-layout")
     print("  G / S / R / Q = gravity / snap / reset / quit")
-    if not api_key:
-        print("\n  ⚠  ANTHROPIC_API_KEY not set — AI generation disabled.")
+    print(f"\n  Using Ollama model '{ollama_model}' at {ollama_host}")
+    print("  (run `ollama serve` and `ollama pull " + ollama_model + "` if generation fails)")
     print()
 
     while True:
@@ -698,11 +699,8 @@ def main():
             elif waiting_prompt or generating:
                 print("Already generating…")
             else:
-                if not api_key:
-                    print("No ANTHROPIC_API_KEY set — cannot generate scenes.")
-                else:
-                    waiting_prompt = True
-                    prompt_thread.start("─" * 40 + "\nAI Scene Generator\n" + "─" * 40)
+                waiting_prompt = True
+                prompt_thread.start("─" * 40 + "\nAI Scene Generator\n" + "─" * 40)
 
         elif key == ord('n'):
             if not teach.active:
