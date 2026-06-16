@@ -1,19 +1,25 @@
 """
-Aether — Phase 4: Full 3D depth interaction.
+Aether — Phase 5: Spatial Computing Environment
 
-RIGHT hand — fist-grab, wrist-twist spin, THROW on open.
-             Moving hand toward camera pulls grabbed cube closer (Z–).
-             Moving hand away pushes cube deeper (Z+).
-LEFT hand  — tilt workspace plane.
-Both fists — scale grabbed cube.
+RIGHT hand gestures:
+  FIST over cube          → grab & hold
+  Open hand (release)     → throw
+  Twist wrist             → spin cube
+  OPEN PALM held 0.5s     → spawn new cube at cursor depth
+  FIST held over cube 1s  → delete (countdown ring)
+  PINCH near cube         → select / deselect
 
-New in Phase 4:
-  - Right-hand wrist Z (MediaPipe depth) drives cube z3d while held.
-  - Throws carry Z velocity — push cube away / pull it toward you.
-  - Perspective projection: farther cubes appear smaller and shift toward centre.
-  - Floor collision in world-Y space; Z is unconstrained.
-  - Depth indicator bar on HUD (shows grabbed cube z3d).
-  - 'G' = gravity, 'R' = reset, 'Q' = quit  (unchanged).
+LEFT hand:
+  Tilt/roll               → workspace plane
+
+BOTH FISTS:
+  Spread / close          → scale grabbed cube
+
+Keys:
+  G = toggle gravity
+  R = reset scene
+  S = toggle snap on grabbed cube
+  Q = quit
 """
 
 import cv2
@@ -28,8 +34,14 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from hand import HandTracker
-from cube import Cube, Z_SCALE, Z_SMOOTH_GRAB
-from physics import HandVelocityTracker
+from cube import Cube
+from physics import HandVelocityTracker, HandDepthCalibrator
+from effects import (
+    AnimatedCursor, DepthPresenceHUD,
+    SpawnSystem, DeleteSystem, SelectionSystem,
+    SnapSystem, CalibrationOverlay,
+    draw_floor_enhanced, draw_minimal_hud,
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -46,10 +58,11 @@ MODEL_URL  = (
 
 HOVER_RADIUS  = 110
 HOVER_EXIT    = 145
-FLOOR_MARGIN  = 40      # pixels from bottom of frame to floor plane
+FLOOR_MARGIN  = 40
 
-# MediaPipe wrist Z smoothing (applied before passing to cube)
-WRIST_Z_SMOOTH = 0.18   # EMA weight; lower = smoother / laggier
+# Hand skeleton colours
+COLOR_RIGHT = (  0, 220, 255)
+COLOR_LEFT  = (255, 160,  40)
 
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),
@@ -59,10 +72,6 @@ HAND_CONNECTIONS = [
     (0,17),(17,18),(18,19),(19,20),
     (5,9),(9,13),(13,17),
 ]
-
-COLOR_RIGHT = (0, 220, 255)
-COLOR_LEFT  = (255, 160,  40)
-COLOR_FLOOR = (40,  80,  60)
 
 
 # ── Model ─────────────────────────────────────────────────────────────
@@ -83,20 +92,10 @@ def draw_hand_skeleton(img, hand_state, W, H, color, label):
     lm  = hand_state.landmarks
     pts = [(int(p[0]*W), int(p[1]*H)) for p in lm]
     for a, b in HAND_CONNECTIONS:
-        cv2.line(img, pts[a], pts[b], color, 2, cv2.LINE_AA)
+        cv2.line(img, pts[a], pts[b], color, 1, cv2.LINE_AA)
     for i, (px, py) in enumerate(pts):
-        r = 5 if i in (4,8,12,16,20) else 3
+        r = 4 if i in (4, 8, 12, 16, 20) else 2
         cv2.circle(img, (px, py), r, color, -1, cv2.LINE_AA)
-    for idx, lbl in {4:"T",8:"I",12:"M",16:"R",20:"P"}.items():
-        px, py = pts[idx]
-        cv2.putText(img, lbl, (px+4,py-4), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.3, color, 1, cv2.LINE_AA)
-    wx, wy = pts[0]
-    for fi, ext in enumerate(hand_state.fingers_extended):
-        cv2.circle(img, (wx-20+fi*10, wy-20), 4,
-                   color if ext else (50,50,50), -1, cv2.LINE_AA)
-    cv2.putText(img, label, (wx-10,wy+20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
 
 
 # ── Plane grid ────────────────────────────────────────────────────────
@@ -120,95 +119,11 @@ def draw_plane(img, left_hand, W, H):
     ov = img.copy()
     for r in range(-rows//2, rows//2+1):
         cv2.line(ov, T(-cols//2*step, r*step),
-                     T( cols//2*step, r*step), (30,60,50), 1, cv2.LINE_AA)
+                     T( cols//2*step, r*step), (20, 50, 38), 1, cv2.LINE_AA)
     for c in range(-cols//2, cols//2+1):
         cv2.line(ov, T(c*step, -rows//2*step),
-                     T(c*step,  rows//2*step), (30,60,50), 1, cv2.LINE_AA)
-    cv2.addWeighted(ov, 0.35, img, 0.65, 0, img)
-
-
-# ── Floor line ────────────────────────────────────────────────────────
-
-def draw_floor(img, floor_y, W):
-    ov = img.copy()
-    cv2.line(ov, (0, floor_y), (W, floor_y), COLOR_FLOOR, 6, cv2.LINE_AA)
-    cv2.addWeighted(ov, 0.5, img, 0.5, 0, img)
-    cv2.line(img, (0, floor_y), (W, floor_y), (60,140,100), 1, cv2.LINE_AA)
-
-
-# ── Velocity arrow ────────────────────────────────────────────────────
-
-def draw_velocity_arrow(img, cube):
-    if cube.body.sleeping or cube.grabbed:
-        return
-    vx, vy = cube.body.vx, cube.body.vy
-    speed  = math.sqrt(vx*vx + vy*vy)
-    if speed < 20:
-        return
-    sx, sy = int(cube.sx), int(cube.sy)
-    scale  = min(60.0, speed * 0.06)
-    ex = int(sx + vx/speed * scale)
-    ey = int(sy + vy/speed * scale)
-    cv2.arrowedLine(img, (sx,sy), (ex,ey), (180,120,255), 2,
-                    cv2.LINE_AA, tipLength=0.4)
-
-
-# ── Depth indicator for grabbed cube ─────────────────────────────────
-
-def draw_depth_indicator(img, cube, W, H):
-    """
-    A vertical bar on the right edge showing z3d.
-    Centre = z=0, top = near (negative), bottom = far (positive).
-    """
-    from physics import Z_NEAR_LIMIT, Z_FAR_LIMIT
-    bar_x   = W - 20
-    bar_top = 60
-    bar_bot = H - 60
-    bar_h   = bar_bot - bar_top
-
-    # Normalise z3d to 0..1 across the near/far range
-    t = (cube.z3d - Z_NEAR_LIMIT) / max(Z_FAR_LIMIT - Z_NEAR_LIMIT, 1.0)
-    t = max(0.0, min(1.0, t))
-
-    marker_y = int(bar_top + t * bar_h)
-    mid_y    = int(bar_top + 0.5 * bar_h)   # z=0 line
-
-    # Background rail
-    cv2.rectangle(img, (bar_x-3, bar_top), (bar_x+3, bar_bot), (40,40,40), -1)
-    # Zero line
-    cv2.line(img, (bar_x-6, mid_y), (bar_x+6, mid_y), (80,80,80), 1)
-    # Marker
-    col = (50,255,120) if cube.grabbed else (180,120,255)
-    cv2.circle(img, (bar_x, marker_y), 7, col, -1, cv2.LINE_AA)
-    # Label
-    cv2.putText(img, f"Z{cube.z3d:+.0f}", (bar_x-30, marker_y-10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.30, col, 1, cv2.LINE_AA)
-    cv2.putText(img, "NEAR", (bar_x-20, bar_top-4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80,80,80), 1, cv2.LINE_AA)
-    cv2.putText(img, "FAR",  (bar_x-14, bar_bot+12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80,80,80), 1, cv2.LINE_AA)
-
-
-# ── Cursor ────────────────────────────────────────────────────────────
-
-def draw_cursor(img, cx, cy, hand_state):
-    cx, cy  = int(cx), int(cy)
-    is_fist = hand_state.is_fist
-    color   = (50,255,120) if is_fist else (20,230,200)
-    ring_r  = 12 if is_fist else 22
-
-    ov = img.copy()
-    cv2.circle(ov, (cx,cy), ring_r+18, color, -1, cv2.LINE_AA)
-    cv2.addWeighted(ov, 0.07, img, 0.93, 0, img)
-    ov = img.copy()
-    cv2.circle(ov, (cx,cy), ring_r+7,  color, -1, cv2.LINE_AA)
-    cv2.addWeighted(ov, 0.18, img, 0.82, 0, img)
-
-    cv2.circle(img, (cx,cy), ring_r, color, 2, cv2.LINE_AA)
-    cv2.circle(img, (cx,cy), 4,      color, -1, cv2.LINE_AA)
-    if not is_fist:
-        cv2.line(img, (cx-10,cy),(cx+10,cy), color, 1, cv2.LINE_AA)
-        cv2.line(img, (cx,cy-10),(cx,cy+10), color, 1, cv2.LINE_AA)
+                     T(c*step,  rows//2*step), (20, 50, 38), 1, cv2.LINE_AA)
+    cv2.addWeighted(ov, 0.30, img, 0.70, 0, img)
 
 
 # ── Two-hand scale ────────────────────────────────────────────────────
@@ -230,56 +145,6 @@ def two_hand_scale_delta(left, right, W, H):
     scale = dist / _prev_two_hand_dist
     _prev_two_hand_dist = dist
     return scale, mid
-
-
-# ── HUD ───────────────────────────────────────────────────────────────
-
-def draw_hud(img, tracker, grabbed_cube, gravity_on, W, H):
-    r    = tracker.right
-    l    = tracker.left
-    h_img = img.shape[0]
-
-    if r.visible:
-        if grabbed_cube: state = "GRAB"
-        elif r.is_fist:  state = "FIST"
-        elif r.is_pointing: state = "POINT"
-        else:            state = "TRACK"
-        col = (50,255,120) if grabbed_cube else (20,200,200)
-    else:
-        state, col = "NO R HAND", (60,60,60)
-
-    cv2.putText(img, f"R: {state}", (16, h_img-36),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
-    if r.visible:
-        cv2.putText(img, r.debug_str(), (16, h_img-16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (80,80,80), 1, cv2.LINE_AA)
-
-    if l.visible:
-        lstate = "SCALE" if (l.is_fist and r.is_fist) else "PLANE"
-        cv2.putText(img, f"L: {lstate}", (16, h_img-56),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_LEFT, 1, cv2.LINE_AA)
-        cv2.putText(img, l.debug_str(), (16, h_img-72),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (80,80,80), 1, cv2.LINE_AA)
-
-    if grabbed_cube:
-        cv2.putText(img, grabbed_cube.body.debug_str(), (16, h_img-90),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (100,200,255), 1, cv2.LINE_AA)
-
-    grav_col = (50,255,120) if gravity_on else (60,60,60)
-    cv2.putText(img, f"G: {'ON' if gravity_on else 'OFF'}", (W-90, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, grav_col, 1, cv2.LINE_AA)
-
-    legend = [
-        "FIST = grab & throw",
-        "Twist = spin",
-        "Hand toward camera = pull close",
-        "Hand away = push far",
-        "L tilt = plane | Both fists = scale",
-        "G=gravity  R=reset  Q=quit",
-    ]
-    for i, line in enumerate(legend):
-        cv2.putText(img, line, (16, 20+i*16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (60,60,60), 1, cv2.LINE_AA)
 
 
 # ── Cube factory ──────────────────────────────────────────────────────
@@ -330,26 +195,37 @@ def main():
     )
     landmarker = mp_vision.HandLandmarker.create_from_options(opts)
 
+    # ── Systems ───────────────────────────────────────────────────────
     tracker      = HandTracker()
     vel_tracker  = HandVelocityTracker()
+    depth_calib  = HandDepthCalibrator(z_scale=600.0, smooth=0.18)
+
+    cursor       = AnimatedCursor()
+    depth_hud    = DepthPresenceHUD()
+    spawn_sys    = SpawnSystem()
+    delete_sys   = DeleteSystem()
+    select_sys   = SelectionSystem()
+    snap_sys     = SnapSystem()
+    calib_overlay = CalibrationOverlay()
+
     cubes        = make_cubes(W, H)
     grabbed_cube = None
     hovered_cube = None
     prev_was_fist = False
     gravity_on    = True
+    snap_on       = False
 
-    # Smoothed world-Z of the right hand (updated every frame)
-    smooth_hand_z = 0.0
+    hand_z_world  = 0.0
+    cx, cy        = float(W/2), float(H/2)
+    prev_time     = time.time()
 
-    cx, cy    = float(W/2), float(H/2)
-    prev_time = time.time()
-
-    print("Controls:")
-    print("  FIST over cube = grab; open hand = THROW")
-    print("  Move hand toward camera = pull cube closer")
-    print("  Move hand away          = push cube further")
-    print("  Twist wrist = spin | Left hand tilt = plane")
-    print("  Both fists = scale | G=gravity  R=reset  Q=quit")
+    print("AETHER Phase 5")
+    print("  FIST  = grab & throw")
+    print("  OPEN PALM held = spawn cube")
+    print("  FIST held over cube = delete")
+    print("  PINCH = select / deselect")
+    print("  Twist = spin | L-hand tilt = plane")
+    print("  Both fists = scale | G=gravity S=snap R=reset Q=quit")
 
     while True:
         ret, frame = cap.read()
@@ -377,17 +253,10 @@ def main():
             cx = right.index_tip[0] * W
             cy = right.index_tip[1] * H
 
-        # ── Right-hand Z (world pixels) ────────────────────────────────
-        # MediaPipe wrist Z is normalised (roughly –0.15 to +0.15 at arm's length).
-        # Multiply by Z_SCALE to map to world-pixel depth range.
-        # Negative raw Z = hand toward camera → negative world-Z (cube comes forward).
+        # ── Right-hand Z via calibrator ────────────────────────────────
         if right.visible:
-            raw_wrist_z  = right.wrist_pos[2]          # MediaPipe normalised Z
-            target_hand_z = raw_wrist_z * Z_SCALE       # world-px depth
-            smooth_hand_z = (WRIST_Z_SMOOTH * target_hand_z +
-                             (1.0 - WRIST_Z_SMOOTH) * smooth_hand_z)
-
-        hand_z_world = smooth_hand_z
+            raw_mp_z    = right.wrist_pos[2]
+            hand_z_world = depth_calib.update(raw_mp_z, now)
 
         # ── Record velocity (3D) ───────────────────────────────────────
         if grabbed_cube is not None and right.visible:
@@ -424,14 +293,30 @@ def main():
             hovered_cube.hovered = False
             hovered_cube         = None
             grabbed_cube.grab(cx, cy, hand_z_world)
+            grabbed_cube.snap_enabled = snap_on
             vel_tracker.reset()
 
         if just_opened and grabbed_cube is not None:
             vx, vy, vz = vel_tracker.release_velocity()
+            # Augment Z velocity with calibrator's depth velocity
+            vz += depth_calib.vel_z * 0.4
             grabbed_cube.release(vx, vy, vz)
             grabbed_cube = None
 
         prev_was_fist = right.is_fist
+
+        # ── Spawn system ───────────────────────────────────────────────
+        if grabbed_cube is None:
+            spawn_sys.update(right, cx, cy, hand_z_world, now, cubes, W, H)
+
+        # ── Delete system ──────────────────────────────────────────────
+        to_delete = delete_sys.update(right, cx, cy, cubes, grabbed_cube)
+        for dead in to_delete:
+            if dead in cubes:
+                cubes.remove(dead)
+
+        # ── Selection system ───────────────────────────────────────────
+        select_sys.update(right, cx, cy, cubes, grabbed_cube)
 
         # ── Update cubes ───────────────────────────────────────────────
         for cube in cubes:
@@ -445,43 +330,68 @@ def main():
         # ── Render ────────────────────────────────────────────────────
         out = frame.copy()
 
-        draw_floor(out, floor_y, W)
+        draw_floor_enhanced(out, floor_y, W)
         draw_plane(out, left, W, H)
         draw_hand_skeleton(out, right, W, H, COLOR_RIGHT, "R")
         draw_hand_skeleton(out, left,  W, H, COLOR_LEFT,  "L")
 
-        # Sort cubes by z3d so farther ones render first
+        # Sort by z3d: far objects first
         for cube in sorted(cubes, key=lambda c: c.z3d, reverse=True):
             if cube is not grabbed_cube:
                 cube.draw(out)
-                draw_velocity_arrow(out, cube)
         if grabbed_cube:
             grabbed_cube.draw(out)
 
+        # Snap guides
+        if grabbed_cube and snap_on:
+            snap_sys.draw_guides(out, grabbed_cube, W, H)
+
+        # Cursor
         if right.visible:
-            draw_cursor(out, cx, cy, right)
+            is_hovering = hovered_cube is not None
+            cursor.draw(out, cx, cy, right, is_hovering,
+                        depth_z=hand_z_world, dt=dt)
 
-        # Depth bar for any active (grabbed or flying) cube
-        active = grabbed_cube or next(
-            (c for c in cubes if not c.body.sleeping and not c.body.on_floor), None
-        )
-        if active:
-            draw_depth_indicator(out, active, W, H)
+        # Depth presence HUD
+        if right.visible and depth_calib.is_calibrated:
+            depth_hud.draw(out, cx, cy, hand_z_world,
+                           active=(grabbed_cube is not None or abs(hand_z_world) > 20))
 
+        # Spawn charge indicator
+        if right.visible and right.is_open and grabbed_cube is None:
+            spawn_sys.draw_progress(out, cx, cy)
+
+        # Selection feedback
+        select_sys.draw_selection_feedback(out, cubes, W, H)
+
+        # Scale feedback
         if scale_delta is not None and left.is_fist and right.is_fist:
             mx, my = int(scale_mid[0]), int(scale_mid[1])
-            cv2.circle(out, (mx,my), 8, (200,200,50), 2, cv2.LINE_AA)
-            cv2.putText(out, f"SCALE {scale_delta:.2f}x", (mx+10,my),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200,200,50), 1, cv2.LINE_AA)
+            cv2.putText(out, f"{scale_delta:.2f}×", (mx + 10, my),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (30, 190, 255), 1, cv2.LINE_AA)
 
-        draw_hud(out, tracker, grabbed_cube, gravity_on, W, H)
+        # Minimal HUD
+        num_sel = sum(1 for c in cubes if c.selected)
+        draw_minimal_hud(out, tracker, grabbed_cube, gravity_on, W, H,
+                         len(cubes), num_sel)
 
-        fps = 1.0/dt if dt > 0 else 0.0
-        cv2.putText(out, f"{fps:.0f} fps", (W-70, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (50,50,50), 1, cv2.LINE_AA)
+        # Snap indicator
+        if snap_on:
+            cv2.putText(out, "SNAP", (W // 2 - 18, H - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                        (20, 60, 40), 1, cv2.LINE_AA)
+
+        # FPS (very subtle)
+        fps = 1.0 / dt if dt > 0 else 0.0
+        cv2.putText(out, f"{fps:.0f}", (W - 28, H - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.28, (30, 30, 30), 1, cv2.LINE_AA)
+
+        # Calibration overlay (fades away after ~45 frames)
+        calib_overlay.draw(out, depth_calib.calibration_progress, W, H)
 
         if W < WINDOW_W or H < WINDOW_H:
-            out = cv2.resize(out, (WINDOW_W, WINDOW_H), interpolation=cv2.INTER_LINEAR)
+            out = cv2.resize(out, (WINDOW_W, WINDOW_H),
+                             interpolation=cv2.INTER_LINEAR)
 
         cv2.imshow("Aether", out)
 
@@ -491,14 +401,20 @@ def main():
         elif key == ord('g'):
             gravity_on = not gravity_on
             print(f"Gravity: {'ON' if gravity_on else 'OFF'}")
+        elif key == ord('s'):
+            snap_on = not snap_on
+            if grabbed_cube:
+                grabbed_cube.snap_enabled = snap_on
+            print(f"Snap: {'ON' if snap_on else 'OFF'}")
         elif key == ord('r'):
             if grabbed_cube:
-                grabbed_cube.release(0,0,0)
+                grabbed_cube.release(0, 0, 0)
                 grabbed_cube = None
             hovered_cube = None
             cubes = make_cubes(W, H)
             vel_tracker.reset()
-            smooth_hand_z = 0.0
+            depth_calib.reset()
+            hand_z_world = 0.0
             print("Reset.")
 
     landmarker.close()
