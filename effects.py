@@ -158,25 +158,34 @@ SPAWN_COOLDOWN   = 0.8     # seconds between spawns
 
 class SpawnSystem:
     """
-    Detects open-palm-hold gesture and spawns new cubes.
+    Detects open-palm-hold gesture and spawns new objects.
     Spawn location = cursor at current hand depth.
+
+    `factory(cx, cy, depth_z, size)` builds whatever object type the
+    caller wants (Cube, SpatialNode, ...) — defaults to Cube so any
+    Phase ≤5 caller that doesn't pass a factory keeps working unchanged.
     """
 
-    def __init__(self):
+    def __init__(self, factory=None):
         self._open_since  = None
         self._last_spawn  = 0.0
         self._progress    = 0.0   # 0..1
+        self._factory      = factory or self._default_factory
+
+    @staticmethod
+    def _default_factory(cx, cy, depth_z, size):
+        from cube import Cube
+        return Cube(cx, cy, z3d=depth_z, size=size)
 
     @property
     def progress(self):
         return self._progress
 
-    def update(self, hand_state, cx, cy, depth_z, t, cubes, W, H):
+    def update(self, hand_state, cx, cy, depth_z, t, objects, W, H):
         """
-        Returns a new Cube if spawning triggered, else None.
-        Modifies cubes list in place.
+        Returns a newly spawned object if spawning triggered, else None.
+        Modifies `objects` list in place.
         """
-        from cube import Cube
         is_open = hand_state.visible and hand_state.is_open
         since_spawn = t - self._last_spawn
 
@@ -198,9 +207,9 @@ class SpawnSystem:
             self._last_spawn = t
             self._progress   = 0.0
             size = int(min(W, H) * 0.10)
-            new_cube = Cube(cx, cy, z3d=depth_z, size=size)
-            cubes.append(new_cube)
-            return new_cube
+            new_obj = self._factory(cx, cy, depth_z, size)
+            objects.append(new_obj)
+            return new_obj
 
         return None
 
