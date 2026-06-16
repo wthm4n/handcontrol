@@ -48,10 +48,16 @@ def _project(x3d, y3d, z3d, screen_cx, screen_cy):
 class Edge:
     """A directed edge from node_a → node_b with an optional label."""
 
-    def __init__(self, src_id, dst_id, label=""):
+    def __init__(self, src_id, dst_id, label="", relation="connects_to"):
         self.src_id = src_id
         self.dst_id = dst_id
         self.label  = label
+        # Semantic relationship kind — one of: contains, depends_on,
+        # causes, connects_to, calls, creates, follows, blocks.
+        # Renderer-agnostic for now (ConnectionRenderer still draws every
+        # edge the same way); this is forward-compatible storage for the
+        # distinct visual styles described in the Phase 7 spec.
+        self.relation = relation
         # Animated pulse position (0..1 along the edge, wraps around)
         self._pulse_t = 0.0
 
@@ -118,21 +124,29 @@ class KnowledgeGraph:
 
     # ── Edges ─────────────────────────────────────────────────────────
 
-    def connect(self, src, dst, label=""):
-        """Add a directed edge src → dst. Accepts nodes or node IDs."""
+    def connect(self, src, dst, label="", relation="connects_to"):
+        """Add a directed edge src → dst. Accepts nodes or node IDs.
+        Returns the Edge object (existing one if already connected)."""
         sid = src if isinstance(src, str) else src.id
         did = dst if isinstance(dst, str) else dst.id
         if sid not in self._nodes or did not in self._nodes:
-            return
+            return None
         if (sid, did) in self._edges:
-            return  # already connected
-        edge = Edge(sid, did, label)
+            return self._edges[(sid, did)]  # already connected
+        edge = Edge(sid, did, label, relation)
         self._edges[edge.key] = edge
         self._adj[sid].add(did)
         self._radj[did].add(sid)
         # Update node connection caches
         self._nodes[sid].connections = list(self._adj[sid])
         self._nodes[did].connections = list(self._adj[did])
+        return edge
+
+    def get_edge(self, src, dst):
+        """Look up the Edge object between src and dst (nodes or IDs), or None."""
+        sid = src if isinstance(src, str) else src.id
+        did = dst if isinstance(dst, str) else dst.id
+        return self._edges.get((sid, did))
 
     def disconnect(self, src, dst):
         sid = src if isinstance(src, str) else src.id
