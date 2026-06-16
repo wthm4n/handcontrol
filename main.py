@@ -61,8 +61,8 @@ HOVER_EXIT    = 145
 FLOOR_MARGIN  = 40
 
 # Hand skeleton colours
-COLOR_RIGHT = (  255, 255, 255)
-COLOR_LEFT  = (1, 1, 1)
+COLOR_RIGHT = (  0, 220, 255)
+COLOR_LEFT  = (255, 160,  40)
 
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),
@@ -335,12 +335,24 @@ def main():
         draw_hand_skeleton(out, right, W, H, COLOR_RIGHT, "R")
         draw_hand_skeleton(out, left,  W, H, COLOR_LEFT,  "L")
 
-        # Sort by z3d: far objects first
-        for cube in sorted(cubes, key=lambda c: c.z3d, reverse=True):
-            if cube is not grabbed_cube:
-                cube.draw(out)
+        # Two-pass rendering: one shared glow layer → one addWeighted → crisp pass.
+        # Cost is O(1) blends per frame regardless of cube count.
+        sorted_cubes = sorted(cubes, key=lambda c: c.z3d, reverse=True)
+        render_list  = [c for c in sorted_cubes if c is not grabbed_cube]
         if grabbed_cube:
-            grabbed_cube.draw(out)
+            render_list.append(grabbed_cube)
+
+        # Pass 1 — glow onto a single black canvas
+        glow_layer = out.copy()
+        glow_layer[:] = 0
+        for cube in render_list:
+            cube.draw_glow(glow_layer)
+        # One composite for all glow across all cubes
+        cv2.addWeighted(glow_layer, 0.55, out, 1.0, 0, out)
+
+        # Pass 2 — crisp geometry directly on out (no blending)
+        for cube in render_list:
+            cube.draw_crisp(out)
 
         # Snap guides
         if grabbed_cube and snap_on:
