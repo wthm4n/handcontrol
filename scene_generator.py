@@ -4,17 +4,24 @@ scene_generator.py — Phase 6: AI Scene Generation
 SceneGenerator takes a natural-language prompt such as
   "Teach me binary trees"
 and returns a populated KnowledgeGraph of SpatialNode objects, with edges,
-by calling the Anthropic Messages API.
+by calling a local Ollama server.
 
 The generator uses a structured JSON protocol so the response can be parsed
 reliably without any external dependencies beyond the stdlib `json` module.
+
+Requires Ollama (https://ollama.com) running and reachable at `host`
+(default http://localhost:11434), with the chosen model already pulled,
+e.g.:
+
+    ollama pull llama3.1
 
 Usage
 -----
     from scene_generator import SceneGenerator
     from graph import KnowledgeGraph
 
-    gen   = SceneGenerator(api_key="sk-ant-…")   # or omit for env-var ANTHROPIC_API_KEY
+    gen   = SceneGenerator()   # or SceneGenerator(host="http://localhost:11434",
+                                #                   model="llama3.1")
     graph = KnowledgeGraph()
     gen.generate(prompt="Teach me recursion", graph=graph,
                  screen_w=1280, screen_h=720)
@@ -36,10 +43,10 @@ import urllib.error
 import urllib.request
 from node import SpatialNode
 
-# ── Default model & endpoint ──────────────────────────────────────────
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-MODEL             = "claude-sonnet-4-6"
-MAX_TOKENS        = 2048
+# ── Default Ollama connection ───────────────────────────────────────
+OLLAMA_HOST     = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "llama3.1")
+REQUEST_TIMEOUT = 60   # local generation can be slower than a hosted API
 
 # ── System prompt ─────────────────────────────────────────────────────
 _SYSTEM = """
@@ -75,12 +82,18 @@ Guidelines:
 """
 
 
-def _build_payload(prompt: str) -> dict:
+def _build_payload(prompt: str, model: str) -> dict:
     return {
-        "model":      MODEL,
-        "max_tokens": MAX_TOKENS,
-        "system":     _SYSTEM,
-        "messages":   [{"role": "user", "content": prompt}],
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user",   "content": prompt},
+        ],
+        "stream": False,
+        # Ollama will constrain sampling so the output is valid JSON —
+        # the model still has to follow the schema in _SYSTEM itself.
+        "format": "json",
+        "options": {"temperature": 0.4},
     }
 
 
@@ -132,41 +145,47 @@ def _populate_graph(nodes_data, edges_data, graph, screen_w, screen_h):
 
 class SceneGenerator:
     """
-    Calls the Anthropic API and populates a KnowledgeGraph.
+    Calls a local Ollama server and populates a KnowledgeGraph.
 
     Parameters
     ----------
-    api_key : str, optional
-        Anthropic API key.  Falls back to the ANTHROPIC_API_KEY env var.
+    host : str, optional
+        Base URL of the Ollama server. Falls back to the OLLAMA_HOST env
+        var, then "http://localhost:11434".
+    model : str, optional
+        Model name to use (must already be pulled via `ollama pull`).
+        Falls back to the OLLAMA_MODEL env var, then "llama3.1".
     """
 
-    def __init__(self, api_key=None):
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    def __init__(self, host=None, model=None):
+        self._host  = (host or OLLAMA_HOST).rstrip("/")
+        self._model = model or OLLAMA_MODEL
 
     def _call_api(self, prompt: str) -> str:
-        """Synchronous HTTP call; returns the raw text from the model."""
-        payload = json.dumps(_build_payload(prompt)).encode()
+        """Synchronous HTTP call to Ollama; returns the raw text from the model."""
+        url     = f"{self._host}/api/chat"
+        payload = json.dumps(_build_payload(prompt, self._model)).encode()
         req     = urllib.request.Request(
-            ANTHROPIC_API_URL,
+            url,
             data    = payload,
             method  = "POST",
-            headers = {
-                "Content-Type":      "application/json",
-                "x-api-key":         self._api_key,
-                "anthropic-version": "2023-06-01",
-            },
+            headers = {"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"API HTTP {e.code}: {e.read().decode()[:200]}") from e
+            raise RuntimeError(f"Ollama HTTP {e.code}: {e.read().decode()[:200]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(
+                f"Could not reach Ollama at {self._host} "
+                f"(is `ollama serve` running?): {e.reason}"
+            ) from e
 
-        # Extract text from the content blocks
-        for block in body.get("content", []):
-            if block.get("type") == "text":
-                return block["text"]
-        raise RuntimeError("No text block in API response")
+        text = body.get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("No content in Ollama response")
+        return text
 
     def generate(self, prompt: str, graph, screen_w=1280, screen_h=720):
         """
