@@ -44,7 +44,9 @@ swap one generator for the other.
 
 import json
 import os
+import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -54,7 +56,16 @@ from node import SpatialNode
 # ── Default Ollama connection ───────────────────────────────────────
 OLLAMA_HOST     = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M")
-REQUEST_TIMEOUT = 120
+# Local generation can be much slower than a hosted API: the first request
+# after `ollama serve` starts pays for loading the model into RAM/VRAM, and
+# format="json" below forces grammar-constrained decoding, which adds real
+# per-token overhead vs free-form text. 60s was too tight for that
+# combination — default to something far more forgiving, override with
+# OLLAMA_TIMEOUT if your hardware needs more.
+REQUEST_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "240"))
+# Keep the model loaded between generations so only the *first* call ever
+# pays the cold-load cost.
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 
 # ── Vocabulary ───────────────────────────────────────────────────────
 STRUCTURE_TYPES = {
@@ -163,6 +174,9 @@ def _build_payload(prompt: str, model: str) -> dict:
         "stream": False,
         "format": "json",
         "options": {"temperature": 0.4},
+        # Avoid the model unloading between generations, which would
+        # otherwise re-pay the cold-load cost on every request.
+        "keep_alive": OLLAMA_KEEP_ALIVE,
     }
 
 
@@ -384,6 +398,7 @@ class WorkspaceGenerator:
             method  = "POST",
             headers = {"Content-Type": "application/json"},
         )
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode())
@@ -393,6 +408,24 @@ class WorkspaceGenerator:
             raise RuntimeError(
                 f"Could not reach Ollama at {self._host} "
                 f"(is `ollama serve` running?): {e.reason}"
+            ) from e
+        except (socket.timeout, TimeoutError) as e:
+            # urlopen() only wraps connect-phase failures into URLError. If
+            # the connection succeeds but the response body never finishes
+            # arriving, Python raises a bare socket timeout here instead —
+            # that's "Ollama is working but slow", not "can't reach Ollama".
+            elapsed = time.monotonic() - started
+            raise RuntimeError(
+                f"Ollama at {self._host} didn't finish responding after "
+                f"{elapsed:.0f}s (limit {REQUEST_TIMEOUT}s). Ollama was "
+                f"reachable — generation just didn't complete in time. "
+                f"Likely causes: this is the first request since `ollama "
+                f"serve` started and the model is still loading into "
+                f"memory (try `ollama run {self._model}` once first to "
+                f"warm it up), or `format=json` constrained decoding is "
+                f"slower than free-form generation on this hardware. "
+                f"Raise OLLAMA_TIMEOUT if needed, or check `ollama ps` "
+                f"while a request is in flight to see what's happening."
             ) from e
 
         text = body.get("message", {}).get("content", "")
