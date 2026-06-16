@@ -426,7 +426,7 @@ def main():
 
     # ── AI scene generator (local Ollama) ───────────────────────────────
     ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    ollama_model = os.environ.get("OLLAMA_MODEL", "llama3.1")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M")
     generator  = SceneGenerator(host=ollama_host, model=ollama_model)
     generating = False
     gen_status = ""
