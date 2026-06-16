@@ -13,7 +13,7 @@ Requires Ollama (https://ollama.com) running and reachable at `host`
 (default http://localhost:11434), with the chosen model already pulled,
 e.g.:
 
-    ollama pull llama3.1
+    ollama pull qwen2.5-coder:7b-instruct-q4_K_M
 
 Usage
 -----
@@ -21,7 +21,7 @@ Usage
     from graph import KnowledgeGraph
 
     gen   = SceneGenerator()   # or SceneGenerator(host="http://localhost:11434",
-                                #                   model="llama3.1")
+                                #                   model="qwen2.5-coder:7b-instruct-q4_K_M")
     graph = KnowledgeGraph()
     gen.generate(prompt="Teach me recursion", graph=graph,
                  screen_w=1280, screen_h=720)
@@ -154,7 +154,7 @@ class SceneGenerator:
         var, then "http://localhost:11434".
     model : str, optional
         Model name to use (must already be pulled via `ollama pull`).
-        Falls back to the OLLAMA_MODEL env var, then "llama3.1".
+        Falls back to the OLLAMA_MODEL env var, then "qwen2.5-coder:7b-instruct-q4_K_M".
     """
 
     def __init__(self, host=None, model=None):
