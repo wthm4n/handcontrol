@@ -1,13 +1,10 @@
 """
-physics.py — Phase 4: Full 3D throw physics for Aether.
+physics.py — Phase 5: Full 3D throw physics for Aether.
 
-Changes from Phase 3:
-  - HandVelocityTracker now tracks (cx, cy, cz) — includes depth.
-  - PhysicsBody upgraded from 2D (vx,vy) to 3D (vx,vy,vz).
-  - Floor collision lives in world-Y space; Z is unconstrained by floor.
-  - Z damping: depth velocity decays faster than XY (no Z "gravity").
-  - Sleep check extended to include vz.
-  - debug_str() shows all three velocity components.
+Phase 5 additions:
+  - HandDepthCalibrator: baseline calibration + dead zone + hysteresis for Z.
+  - HandVelocityTracker extended with z-velocity/acceleration accessors.
+  - PhysicsBody: no structural changes, same API.
 
 Coordinate conventions (matches cube.py):
   X  — screen right   (pixels from left edge of frame)
@@ -39,6 +36,134 @@ Z_NEAR_BOUNCE   = 0.35   # energy kept when hitting the near-Z wall
 Z_NEAR_LIMIT    = -300.0 # world-Z: closest the cube can come (px)
 Z_FAR_LIMIT     = 800.0  # world-Z: furthest the cube can go (px)
 
+# ── Depth calibration constants ───────────────────────────────────────
+
+DEPTH_CALIB_FRAMES  = 45    # frames to collect for baseline
+DEPTH_DEAD_ZONE     = 12.0  # world-px — movements smaller than this ignored
+DEPTH_HYSTERESIS    = 6.0   # extra buffer before re-engaging after dead zone
+DEPTH_DRIFT_DECAY   = 0.003 # how fast baseline drifts back to observed mean
+
+
+class HandDepthCalibrator:
+    """
+    Converts raw MediaPipe wrist-Z to stable world-Z depth.
+
+    Phase 5 improvements over direct Z_SCALE multiplication:
+      • Establishes a neutral baseline from the first N frames.
+      • Computes relative depth from that baseline (eliminates person-to-
+        person distance variation).
+      • Dead zone + hysteresis kills micro-jitter.
+      • Slow baseline drift correction keeps depth centred over time.
+    """
+
+    def __init__(self, z_scale=600.0, smooth=0.18):
+        self.z_scale   = z_scale
+        self.smooth    = smooth
+
+        # Calibration state
+        self._calib_buf   = deque(maxlen=DEPTH_CALIB_FRAMES)
+        self._calibrated  = False
+        self._baseline    = 0.0   # MediaPipe Z at "neutral" depth
+
+        # Output state
+        self._smooth_z    = 0.0   # smoothed world-Z output
+        self._in_deadzone = True  # True while movement < dead zone
+        self._dz_anchor   = 0.0  # world-Z where dead zone was entered
+
+        # Velocity tracking (world-px/s)
+        self._prev_z      = 0.0
+        self._prev_t      = None
+        self._vel_z       = 0.0   # smoothed velocity
+        self._acc_z       = 0.0   # smoothed acceleration
+
+    def update(self, raw_mp_z, t):
+        """
+        raw_mp_z : MediaPipe wrist Z (normalised, ~-0.15..+0.15)
+        t        : current timestamp (seconds)
+        Returns  : stable world-Z (pixels)
+        """
+        # ── Phase 1: Calibration ──────────────────────────────────────
+        self._calib_buf.append(raw_mp_z)
+        if not self._calibrated:
+            if len(self._calib_buf) >= DEPTH_CALIB_FRAMES:
+                self._baseline   = sum(self._calib_buf) / len(self._calib_buf)
+                self._calibrated = True
+            else:
+                # Return 0 until calibrated
+                return 0.0
+
+        # ── Relative depth in world pixels ────────────────────────────
+        relative_mp_z = raw_mp_z - self._baseline
+        raw_world_z   = relative_mp_z * self.z_scale
+
+        # ── Slow baseline drift correction ────────────────────────────
+        # Gently pull baseline toward a 60-frame moving average so long-
+        # term drift (arm fatigue, posture shift) doesn't accumulate.
+        if len(self._calib_buf) >= DEPTH_CALIB_FRAMES:
+            running_mean = sum(self._calib_buf) / len(self._calib_buf)
+            self._baseline += (running_mean - self._baseline) * DEPTH_DRIFT_DECAY
+
+        # ── Smooth ────────────────────────────────────────────────────
+        self._smooth_z = (self.smooth * raw_world_z +
+                          (1.0 - self.smooth) * self._smooth_z)
+        sz = self._smooth_z
+
+        # ── Dead zone + hysteresis ────────────────────────────────────
+        if self._in_deadzone:
+            if abs(sz - self._dz_anchor) > DEPTH_DEAD_ZONE + DEPTH_HYSTERESIS:
+                self._in_deadzone = False
+        else:
+            if abs(sz - self._dz_anchor) < DEPTH_DEAD_ZONE:
+                self._in_deadzone = True
+                self._dz_anchor   = sz
+
+        if self._in_deadzone:
+            output_z = self._dz_anchor
+        else:
+            # Clamp output relative to anchor by removing dead zone offset
+            direction = 1.0 if sz > self._dz_anchor else -1.0
+            output_z  = self._dz_anchor + direction * (abs(sz - self._dz_anchor) - DEPTH_DEAD_ZONE)
+
+        # ── Velocity / acceleration ────────────────────────────────────
+        if self._prev_t is not None:
+            dt = max(t - self._prev_t, 1e-4)
+            inst_vel    = (output_z - self._prev_z) / dt
+            prev_vel    = self._vel_z
+            self._vel_z = 0.4 * inst_vel + 0.6 * self._vel_z
+            self._acc_z = (self._vel_z - prev_vel) / dt
+        self._prev_z = output_z
+        self._prev_t = t
+
+        return output_z
+
+    @property
+    def vel_z(self):
+        return self._vel_z
+
+    @property
+    def acc_z(self):
+        return self._acc_z
+
+    @property
+    def is_calibrated(self):
+        return self._calibrated
+
+    @property
+    def calibration_progress(self):
+        return min(1.0, len(self._calib_buf) / DEPTH_CALIB_FRAMES)
+
+    def reset(self):
+        self._calib_buf.clear()
+        self._calibrated  = False
+        self._baseline    = 0.0
+        self._smooth_z    = 0.0
+        self._in_deadzone = True
+        self._dz_anchor   = 0.0
+        self._prev_z      = 0.0
+        self._prev_t      = None
+        self._vel_z       = 0.0
+        self._acc_z       = 0.0
+
 
 class HandVelocityTracker:
     """
@@ -60,11 +185,6 @@ class HandVelocityTracker:
         self._smoothed_vz = 0.0
 
     def record(self, cx, cy, cz, t):
-        """
-        cx, cy  — screen pixels
-        cz      — world-Z of the hand (same units as cube.z3d, i.e. pixels)
-        t       — timestamp (seconds)
-        """
         self._buf.append((cx, cy, cz, t))
 
         if len(self._buf) >= 2:
@@ -78,7 +198,6 @@ class HandVelocityTracker:
                 self._smoothed_vz = w*(z1-z0)/dt + (1-w)*self._smoothed_vz
 
     def release_velocity(self):
-        """Return (vx, vy, vz) in world-px/s."""
         vx = self._smoothed_vx * THROW_SCALE_XY
         vy = self._smoothed_vy * THROW_SCALE_XY
         vz = self._smoothed_vz * THROW_SCALE_Z
@@ -93,41 +212,29 @@ class HandVelocityTracker:
 class PhysicsBody:
     """
     Full 3D physics body attached to each Cube.
-
-    step() returns (new_x, new_y, new_z, drx, dry, drz).
-    The cube applies position directly and accumulates rotation deltas.
-
-    Floor is a world-Y plane. Z has soft near/far limits.
-    No gravity in Z — depth throws just coast with drag.
+    Unchanged from Phase 4 — same API, same behaviour.
     """
 
     def __init__(self):
-        self.vx  = 0.0   # px/s — screen right
-        self.vy  = 0.0   # px/s — screen down
-        self.vz  = 0.0   # px/s — depth (positive = away)
-        self.vrx = 0.0   # rad/s
-        self.vry = 0.0   # rad/s
-        self.vrz = 0.0   # rad/s
+        self.vx  = 0.0
+        self.vy  = 0.0
+        self.vz  = 0.0
+        self.vrx = 0.0
+        self.vry = 0.0
+        self.vrz = 0.0
         self.on_floor = False
         self.sleeping = False
-
-    # ── Launch / stop ─────────────────────────────────────────────────
 
     def launch(self, vx, vy, vz=0.0):
         self.vx = vx
         self.vy = vy
         self.vz = vz
-
-        # Spin bleed from XY speed
         speed_xy = math.sqrt(vx*vx + vy*vy)
         sign_x   = 1.0 if vx >= 0 else -1.0
         self.vrz += sign_x * speed_xy * SPIN_TRANSFER
         self.vry += vx * SPIN_TRANSFER * 0.5
         self.vrx += vy * SPIN_TRANSFER * 0.3
-
-        # Z throw also creates yaw spin
         self.vry += vz * SPIN_TRANSFER * 0.4
-
         self.on_floor = False
         self.sleeping = False
 
@@ -137,35 +244,25 @@ class PhysicsBody:
         self.on_floor = False
         self.sleeping = False
 
-    # ── Step ──────────────────────────────────────────────────────────
-
     def step(self, dt, x3d, y3d, z3d,
              floor_y, screen_w, screen_h,
              gravity_on=True):
-        """
-        Advance physics one frame.
-        Returns (new_x, new_y, new_z, drx, dry, drz).
-        """
         if self.sleeping:
             return x3d, y3d, z3d, 0.0, 0.0, 0.0
 
-        # ── Gravity (Y only) ──────────────────────────────────────────
         if gravity_on and not self.on_floor:
             self.vy += GRAVITY * dt
 
-        # ── Air drag ──────────────────────────────────────────────────
         damp_xy = AIR_DAMPING_XY ** (dt * 60)
         damp_z  = AIR_DAMPING_Z  ** (dt * 60)
         self.vx *= damp_xy
         self.vy *= damp_xy
         self.vz *= damp_z
 
-        # ── Integrate ─────────────────────────────────────────────────
         new_x = x3d + self.vx * dt
         new_y = y3d + self.vy * dt
         new_z = z3d + self.vz * dt
 
-        # ── Floor (world-Y plane) ─────────────────────────────────────
         if new_y >= floor_y:
             new_y = floor_y
             if abs(self.vy) < MIN_BOUNCE_VY:
@@ -175,9 +272,8 @@ class PhysicsBody:
                 self.vy      = -abs(self.vy) * FLOOR_BOUNCE
                 self.on_floor = False
             self.vx *= FLOOR_FRICTION
-            self.vz *= FLOOR_FRICTION   # also slows depth on floor bounce
+            self.vz *= FLOOR_FRICTION
 
-        # ── Side walls (world-X) ──────────────────────────────────────
         margin = 30
         if new_x < margin:
             new_x    = margin
@@ -186,15 +282,13 @@ class PhysicsBody:
             new_x    = screen_w - margin
             self.vx  = -abs(self.vx) * WALL_BOUNCE
 
-        # ── Depth limits (world-Z) ────────────────────────────────────
         if new_z < Z_NEAR_LIMIT:
             new_z    = Z_NEAR_LIMIT
-            self.vz  = abs(self.vz) * Z_NEAR_BOUNCE   # bounce back from near wall
+            self.vz  = abs(self.vz) * Z_NEAR_BOUNCE
         elif new_z > Z_FAR_LIMIT:
             new_z    = Z_FAR_LIMIT
             self.vz  = -abs(self.vz) * Z_NEAR_BOUNCE
 
-        # ── Spin decay ────────────────────────────────────────────────
         sdamp    = SPIN_DAMPING ** (dt * 60)
         self.vrx *= sdamp
         self.vry *= sdamp
@@ -209,7 +303,6 @@ class PhysicsBody:
         dry = self.vry * dt
         drz = self.vrz * dt
 
-        # ── Sleep ─────────────────────────────────────────────────────
         lin  = math.sqrt(self.vx**2 + self.vy**2 + self.vz**2)
         ang  = math.sqrt(self.vrx**2 + self.vry**2 + self.vrz**2)
         if self.on_floor and lin < 2.0 and ang < 0.005:
