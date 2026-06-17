@@ -7,7 +7,7 @@ ignore_pm = true
 
 [ollama]
 enabled = true
-model = "qwen2.5-coder:7b-instruct-q4_K_M"
+model = "llama3.2:3b"
 
 [watcher]
 enabled = true
