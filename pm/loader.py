@@ -1,10 +1,23 @@
+"""TOML configuration loader."""
+
+import logging
 import tomllib
 from pathlib import Path
 
 from .exceptions import ConfigNotFoundError, ConfigParseError, ConfigValidationError
-from .models import FormatterConfig, ProjectConfig, ProjectSettings, SourceControllerConfig
+from .models import (
+    FormatterConfig,
+    GitConfig,
+    LoggingConfig,
+    OllamaConfig,
+    ProjectConfig,
+    ProjectSettings,
+    TasksConfig,
+    WatcherConfig,
+)
 
 CONFIG_FILENAME = ".src"
+log = logging.getLogger("pm.config")
 
 
 class ConfigLoader:
@@ -31,31 +44,68 @@ class ConfigLoader:
             errors.append("Missing required section: [project]")
         elif "name" not in raw.get("project", {}):
             errors.append("Missing required field: project.name")
-        sc = raw.get("source_controller", {})
-        if "source_controller" in raw and "enabled" not in sc:
-            errors.append("Missing required field: source_controller.enabled")
-        if "source_controller" in raw and sc.get("enabled") and "branch" not in sc:
-            errors.append("Missing required field: source_controller.branch")
+        git = raw.get("git", {})
+        if git.get("enabled") and "branch" not in git:
+            errors.append("Missing required field: git.branch (when git.enabled = true)")
         if errors:
             raise ConfigValidationError(errors)
 
     def _build(self, raw: dict) -> ProjectSettings:
-        project_raw = raw.get("project", {})
-        fmt_raw = raw.get("formatter", {})
-        sc_raw = raw.get("source_controller", {})
+        p = raw.get("project", {})
+        o = raw.get("ollama", {})
+        w = raw.get("watcher", {})
+        f = raw.get("formatter", {})
+        g = raw.get("git", {})
+        t = raw.get("tasks", {})
+        ll = raw.get("logging", {})
+
+        if "commit_message" in g and "fallback_commit_message" not in g:
+            log.warning(
+                "[config] [git].commit_message is deprecated — rename it to "
+                "[git].fallback_commit_message (it's now only used when AI "
+                "generation is disabled or fails)."
+            )
+
         return ProjectSettings(
             version=raw["version"],
             project=ProjectConfig(
-                name=project_raw["name"],
-                root=project_raw.get("root", "."),
+                name=p["name"],
+                root=p.get("root", "."),
+                ignore_pm=p.get("ignore_pm", True),
+            ),
+            ollama=OllamaConfig(
+                enabled=o.get("enabled", False),
+                host=o.get("host", "http://localhost:11434"),
+                model=o.get("model", "qwen2.5-coder:7b-instruct-q4_K_M"),
+                timeout=o.get("timeout", 120),
+            ),
+            watcher=WatcherConfig(
+                enabled=w.get("enabled", True),
+                recursive=w.get("recursive", True),
+                debounce_ms=w.get("debounce_ms", 300),
             ),
             formatter=FormatterConfig(
-                provider=fmt_raw.get("provider", "black"),
-                line_length=fmt_raw.get("line_length", 88),
+                enabled=f.get("enabled", True),
+                auto_format=f.get("auto_format", True),
+                strip_comments=f.get("strip_comments", True),
+                max_blank_lines=f.get("max_blank_lines", 2),
             ),
-            source_controller=SourceControllerConfig(
-                enabled=sc_raw.get("enabled", True),
-                branch=sc_raw.get("branch", "main"),
-                remote=sc_raw.get("remote", "origin"),
+            git=GitConfig(
+                enabled=g.get("enabled", True),
+                branch=g.get("branch", "main"),
+                remote=g.get("remote", "origin"),
+                auto_commit=g.get("auto_commit", False),
+                auto_push=g.get("auto_push", False),
+                fallback_commit_message=g.get(
+                    "fallback_commit_message",
+                    g.get("commit_message", "auto: project update"),
+                ),
+            ),
+            tasks=TasksConfig(
+                default=t.get("default", "sync"),
+            ),
+            logging=LoggingConfig(
+                level=ll.get("level", "INFO"),
+                format=ll.get("format", "[%(name)s] %(message)s"),
             ),
         )

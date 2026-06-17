@@ -1,20 +1,30 @@
-version = 1
+version = 2
 
 [project]
-name = "handcontrol"
+name = "hand-control"
 root = "."
+ignore_pm = true
 
-[modules]
-enabled = [
-    "formatter",
-    "source_controller"
-]
+[ollama]
+enabled = true
+model = "qwen2.5-coder:7b-instruct-q4_K_M"
+
+[watcher]
+enabled = true
 
 [formatter]
-provider = "black"
-line_length = 88
+enabled = true
+auto_format = true
 
-[source_controller]
+[git]
 enabled = true
 branch = "handctrl"
 remote = "origin"
+
+auto_commit = true
+auto_push = true
+
+commit_message = "auto: update"
+
+[tasks]
+default = "sync"

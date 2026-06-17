@@ -23,7 +23,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-
 APP_VERSION = "1.0.0"
 
 
@@ -57,7 +56,6 @@ def timer(func: Callable):
     Simple decorator.
     """
 
-
     def wrapper(*args, **kwargs):
 
         return func(*args, **kwargs)
@@ -79,7 +77,6 @@ class TaskManager:
         Add a task.
         """
 
-
         if not task.name:
             raise ValueError("Task name cannot be empty")
 
@@ -89,7 +86,6 @@ class TaskManager:
         """
         Find task by name.
         """
-
 
         for task in self.tasks:
             if task.name == name:
@@ -101,7 +97,6 @@ class TaskManager:
         """
         Remove a task.
         """
-
 
         for task in list(self.tasks):
             if task.name == name:
@@ -115,7 +110,6 @@ class TaskManager:
         Return all tasks.
         """
 
-
         return list(self.tasks)
 
     @timer
@@ -124,9 +118,7 @@ class TaskManager:
         Process all pending tasks.
         """
 
-
         for task in self.tasks:
-
 
             if task.status == Status.COMPLETED:
                 continue
@@ -135,9 +127,7 @@ class TaskManager:
 
             try:
 
-
                 result = self._execute_task(task)
-
 
                 if result:
                     task.status = Status.COMPLETED
@@ -152,7 +142,6 @@ class TaskManager:
         Internal execution routine.
         """
 
-
         def validate() -> bool:
 
             return bool(task.name)
@@ -164,7 +153,6 @@ def load_project(root: Path) -> dict:
     """
     Load a fake project configuration.
     """
-
 
     config = {
         "name": "Demo Project",
@@ -180,7 +168,6 @@ def calculate_statistics(values: list[int]) -> dict:
     Calculate basic statistics.
     """
 
-
     if not values:
         return {
             "count": 0,
@@ -189,7 +176,6 @@ def calculate_statistics(values: list[int]) -> dict:
         }
 
     total = sum(values)
-
 
     average = total / len(values)
 
@@ -205,21 +191,16 @@ def main() -> None:
     Program entry point.
     """
 
-
     manager = TaskManager()
-
 
     manager.add_task(Task("Build"))
     manager.add_task(Task("Test"))
     manager.add_task(Task("Deploy"))
 
-
     manager.process_tasks()
-
 
     for task in manager.list_tasks():
         print(f"{task.name}: {task.status.value}")
-
 
     stats = calculate_statistics([1, 2, 3, 4, 5])
 

@@ -1,3 +1,6 @@
+"""PM exception hierarchy."""
+
+
 class PMError(Exception):
     """Base exception for all Project Manager errors."""
 
@@ -28,5 +31,29 @@ class ModuleNotFoundError(ModuleError):
     """Raised when a requested module is not registered."""
 
 
+class ModuleAlreadyRegisteredError(ModuleError):
+    """Raised when a module name collision occurs."""
+
+
 class ModuleSetupError(ModuleError):
     """Raised when a module fails during setup."""
+
+
+class TaskError(PMError):
+    """Raised when a task fails."""
+
+
+class TaskNotFoundError(TaskError):
+    """Raised when a task name is not recognized."""
+
+
+class GitError(PMError):
+    """Raised when a git operation fails."""
+
+
+class OllamaError(PMError):
+    """Raised when Ollama integration fails."""
+
+
+class WatcherError(PMError):
+    """Raised when the file watcher encounters an error."""
