@@ -23,7 +23,22 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+
 APP_VERSION = "1.0.0"
+
+def version() -> str:
+    """
+    Return the current application version.
+    """
+
+    return APP_VERSION
+
+def greet(name: str) -> str:
+    """
+    Return a greeting message for *name*.
+    """
+
+    return f"Hello, {name}!"
 
 
 class Status(Enum):
