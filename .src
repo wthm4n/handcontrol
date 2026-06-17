@@ -1,0 +1,20 @@
+version = 1
+
+[project]
+name = "handcontrol"
+root = "."
+
+[modules]
+enabled = [
+    "formatter",
+    "source_controller"
+]
+
+[formatter]
+provider = "black"
+line_length = 88
+
+[source_controller]
+enabled = true
+branch = "handctrl"
+remote = "origin"
