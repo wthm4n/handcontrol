@@ -50,6 +50,17 @@ class Status(Enum):
     FAILED = "failed"
 
 
+def showTime() -> None:
+    """
+    Print the current time.
+    """
+
+    from datetime import datetime
+
+    now = datetime.now()
+
+    print(f"Current time: {now}")
+
 @dataclass
 class Task:
     """
