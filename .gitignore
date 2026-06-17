@@ -1,4 +1,6 @@
+# Project Manager (PM) specific files
 pm/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
