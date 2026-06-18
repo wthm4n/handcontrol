@@ -241,6 +241,33 @@ def run():
     main()
 
 
+def run_with_error_handling():
+    """
+    Run the main function with error handling.
+    """
+
+    try:
+        main()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+def run_with_logging():
+    """
+    Run the main function with logging.
+    """
+
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+
+    logging.info("Starting the application.")
+
+    main()
+
+    logging.info("Application finished.")
+
+
 if __name__ == "__main__":
 
     main()
