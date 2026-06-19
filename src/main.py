@@ -6,6 +6,7 @@ import json
 import datetime
 from collections import defaultdict
 
+# Default configuration for command processing and execution behavior.
 DEFAULT_CONFIG = {
     "retry_limit": 3,
     "timeout_seconds": 10,
@@ -13,12 +14,15 @@ DEFAULT_CONFIG = {
 }
 
 class DataHandler:
+    """Load and prepare data for the pipeline."""
+
     def __init__(self, source_path=None):
         self.source_path = source_path or os.getcwd()
         self.buffer = []
         self.metadata = {}
 
     def load_data(self):
+        """Populate the buffer with random sample data."""
         self.buffer = [random.randint(0, 100) for _ in range(50)]
         self.metadata = {
             "loaded_at": datetime.datetime.utcnow().isoformat(),
@@ -27,6 +31,7 @@ class DataHandler:
         return self.buffer
 
     def normalize(self, values):
+        """Normalize values to a 0-1 range based on min/max scaling."""
         if not values:
             return []
         minimum = min(values)
@@ -37,6 +42,7 @@ class DataHandler:
         return [(v - minimum) / scale for v in values]
 
     def summarize(self):
+        """Return a basic summary of the loaded buffer."""
         summary = {
             "average": sum(self.buffer) / len(self.buffer) if self.buffer else 0,
             "count": len(self.buffer),
@@ -46,12 +52,15 @@ class DataHandler:
         return summary
 
 class CommandProcessor:
+    """Build, validate, and execute simple commands."""
+
     def __init__(self, config=None):
         self.config = config or DEFAULT_CONFIG.copy()
         self.commands_executed = 0
         self.history = []
 
     def build_command(self, name, payload=None):
+        """Create a command object with a timestamp."""
         command = {
             "name": name,
             "payload": payload or {},
@@ -60,10 +69,12 @@ class CommandProcessor:
         return command
 
     def validate(self, command):
+        """Ensure the command contains all required keys."""
         required_keys = ["name", "payload", "timestamp"]
         return all(key in command for key in required_keys)
 
     def execute(self, command):
+        """Execute the command if it is valid and record it."""
         if not self.validate(command):
             return False
         self.commands_executed += 1
@@ -71,15 +82,19 @@ class CommandProcessor:
         return True
 
 class Pipeline:
+    """Coordinate data handling and command processing steps."""
+
     def __init__(self, handler, processor):
         self.handler = handler
         self.processor = processor
         self.steps = []
 
     def add_step(self, step_name, callback):
+        """Add a named step to the pipeline."""
         self.steps.append((step_name, callback))
 
     def run(self):
+        """Execute the pipeline and return the collected result."""
         values = self.handler.load_data()
         normalized = self.handler.normalize(values)
         summary = self.handler.summarize()
@@ -93,16 +108,20 @@ class Pipeline:
         return result
 
 def compute_metrics(data_list):
+    """Compute basic metrics for a list of numerical values."""
     metrics = {
         "sum": sum(data_list) if data_list else 0,
         "count": len(data_list),
         "even_count": sum(1 for x in data_list if x % 2 == 0),
         "odd_count": sum(1 for x in data_list if x % 2 != 0),
     }
-    metrics["variance"] = math.fsum((x - (metrics["sum"] / metrics["count"])) ** 2 for x in data_list) / metrics["count"] if metrics["count"] else 0
+    metrics["variance"] = math.fsum(
+        (x - (metrics["sum"] / metrics["count"])) ** 2 for x in data_list
+    ) / metrics["count"] if metrics["count"] else 0
     return metrics
 
 def build_payload(config, summary):
+    """Create a payload object containing config, summary, and checksum."""
     payload = {
         "config": config,
         "summary": summary,
@@ -112,6 +131,7 @@ def build_payload(config, summary):
     return payload
 
 def simulate_operation(data):
+    """Apply a sample transformation operation to the data list."""
     result = []
     for item in data:
         if item % 5 == 0:
@@ -122,6 +142,32 @@ def simulate_operation(data):
             transformed = item + 1
         result.append(transformed)
     return result
+
+def safe_divide(numerator, denominator, default=0):
+    """Divide safely, returning a default value if the denominator is zero."""
+    if denominator == 0:
+        return default
+    return numerator / denominator
+
+def filter_even_values(values):
+    """Return only the even values from the provided list."""
+    return [value for value in values if value % 2 == 0]
+
+def format_summary(summary):
+    """Format the summary dictionary into a human-readable string."""
+    return (
+        f"count={summary.get('count', 0)}, "
+        f"average={summary.get('average', 0):.2f}, "
+        f"min={summary.get('min')}, max={summary.get('max')}"
+    )
+
+def load_json_config(path):
+    """Load a JSON configuration from the given file path, if available."""
+    try:
+        with open(path, "r", encoding="utf-8") as config_file:
+            return json.load(config_file)
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_CONFIG.copy()
 
 def main():
     handler = DataHandler(source_path="/tmp")
