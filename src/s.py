@@ -1,10 +1,16 @@
 import os
 import random
 import logging
+from pathlib import Path
 
 import discord
-from discord import app_commands
+from discord import app_commands, FFmpegPCMAudio
 from discord.ext import commands
+
+try:
+    from yt_dlp import YoutubeDL
+except ImportError:
+    from youtube_dl import YoutubeDL
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +62,66 @@ async def echo(ctx, *, message: str):
     await ctx.send(message)
 
 
+@bot.command(name='join')
+async def join_voice(ctx):
+    if ctx.author.voice is None:
+        await ctx.send('You need to be in a voice channel first.')
+        return
+    channel = ctx.author.voice.channel
+    if ctx.voice_client is not None:
+        await ctx.voice_client.move_to(channel)
+    else:
+        await channel.connect()
+    await ctx.send(f'Joined voice channel: {channel.name}')
+
+
+@bot.command(name='leave')
+async def leave_voice(ctx):
+    voice_client = ctx.voice_client
+    if voice_client is None:
+        await ctx.send('I am not connected to a voice channel.')
+        return
+    await voice_client.disconnect()
+    await ctx.send('Disconnected from voice channel.')
+
+
+@bot.command(name='play')
+async def play_music(ctx, *, url: str):
+    if ctx.author.voice is None:
+        await ctx.send('You need to be in a voice channel to play music.')
+        return
+    channel = ctx.author.voice.channel
+    voice_client = ctx.voice_client
+    if voice_client is None:
+        voice_client = await channel.connect()
+    elif voice_client.channel != channel:
+        await voice_client.move_to(channel)
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'noplaylist': True,
+    }
+
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
+            audio_url = info['url']
+            title = info.get('title', 'audio')
+    except Exception as exc:
+        logging.error(f'Error extracting audio from {url}: {exc}')
+        await ctx.send(f'Error processing URL: {exc}')
+        return
+
+    source = FFmpegPCMAudio(audio_url, executable='ffmpeg')
+    if voice_client.is_playing():
+        voice_client.stop()
+    voice_client.play(source)
+    await ctx.send(f'Now playing: {title}')
+
+
 @bot.tree.command(name='ping', description='Responds with Pong!')
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message('Pong!')
@@ -104,6 +170,9 @@ async def help_me(ctx):
         "Available commands:\n"
         "!ping - Responds with Pong!\n"
         "!echo <message> - Echoes the provided message\n"
+        "!join - Joins your voice channel\n"
+        "!leave - Leaves the voice channel\n"
+        "!play <url> - Plays audio from a URL in voice chat\n"
         "!readfile <filename> - Reads and displays the contents of a file\n"
         "!random [start] [end] - Generates a random number between start and end (default 0-100)\n"
         "!helpme - Shows this help message\n"
