@@ -72,3 +72,42 @@ if __name__ == '__main__':
     if not token:
         raise RuntimeError('Set DISCORD_TOKEN environment variable')
     bot.run(token)
+
+
+from __future__ import annotations
+from pathlib import Path
+
+@bot.command(name='readfile')
+async def read_file(ctx, *, filename: str):
+    path = Path(filename)
+    if not path.is_file():
+        await ctx.send(f'File not found: {filename}')
+        return
+    try:
+        content = path.read_text(encoding='utf-8')
+        await ctx.send(f'Contents of {filename}:\n```\n{content}\n```')
+    except Exception as exc:
+        logging.error(f'Error reading file {filename}: {exc}')
+        await ctx.send(f'Error reading file: {exc}')
+    
+
+@bot.command(name='random')
+async def random_number(ctx, start: int = 0, end: int = 100
+):
+    number = random.randint(start, end)
+    await ctx.send(f'Random number between {start} and {end}: {number}')
+
+
+@bot.command(name='helpme')
+async def help_me(ctx):
+    help_text = (
+        "Available commands:\n"
+        "!ping - Responds with Pong!\n"
+        "!echo <message> - Echoes the provided message\n"
+        "!readfile <filename> - Reads and displays the contents of a file\n"
+        "!random [start] [end] - Generates a random number between start and end (default 0-100)\n"
+        "!helpme - Shows this help message\n"
+    )
+    await ctx.send(help_text)
+
+
