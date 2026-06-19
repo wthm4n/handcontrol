@@ -262,3 +262,51 @@ def _get_config(key, default=None):
     return config.get(key, default)
 
 
+def _sanitize_text(text):
+    """Clean up and normalize a text string for processing."""
+
+    if text is None:
+        return ''
+
+
+    cleaned = str(text).strip().replace('\r\n', '\n')
+    return cleaned
+
+
+def _calculate_ratio(part, whole):
+    """Calculate the ratio of part to whole safely."""
+
+
+    if whole == 0 or whole is None:
+        return 0.0
+
+    try:
+        return float(part) / float(whole)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_active(flag):
+    """Determine whether a feature flag or state is active."""
+
+
+    if isinstance(flag, str):
+        return flag.lower() in ('true', '1', 'yes', 'on')
+
+    return bool(flag)
+
+
+def _merge_settings(base, overrides):
+    """Merge two configuration dictionaries, with overrides taking precedence."""
+
+    if not isinstance(base, dict):
+        base = {}
+
+    if not isinstance(overrides, dict):
+        overrides = {}
+
+    merged = base.copy()
+    merged.update(overrides)
+    return merged
+
+
