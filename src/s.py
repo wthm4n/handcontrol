@@ -3,6 +3,7 @@ import random
 import logging
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 logging.basicConfig(
@@ -53,6 +54,17 @@ async def ping(ctx):
 @bot.command(name='echo')
 async def echo(ctx, *, message: str):
     await ctx.send(message)
+
+
+@bot.tree.command(name='ping', description='Responds with Pong!')
+async def ping_slash(interaction: discord.Interaction):
+    await interaction.response.send_message('Pong!')
+
+
+@bot.tree.command(name='echo', description='Echoes a message')
+@app_commands.describe(message='Message to echo')
+async def echo_slash(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(message)
 
 
 if __name__ == '__main__':
