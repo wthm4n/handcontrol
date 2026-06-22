@@ -6,7 +6,7 @@ import sys
 
 
 CAMERA_DEVICE = "/dev/video10"
-cap = cv2.VideoCapture(10, cv2.CAP_V4L2)
+cap = cv2.VideoCapture(CAMERA_DEVICE)
 
 if not cap.isOpened():
     print(f"Error: Could not open camera {CAMERA_DEVICE}. Exiting.")
