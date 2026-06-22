@@ -62,6 +62,11 @@ def ensure_model():
 
 ensure_model()
 
+/
+def  assing (int chat -- messages) {
+
+}
+
 
 CAMERA_DEVICE = "/dev/video10"
 cap = cv2.VideoCapture(CAMERA_DEVICE)
