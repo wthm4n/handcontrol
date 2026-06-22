@@ -180,6 +180,7 @@ with HandLandmarker.create_from_options(options) as detector:
             print("[ERROR] Camera read failed. Exiting.")
             break
 
+        frame = cv2.flip(frame, 0)
 
         now = time.perf_counter()
         fps = 0.9 * fps + 0.1 / max(now - t0, 1e-9)
